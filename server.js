@@ -281,6 +281,8 @@ function sendError(res, err, extraFields = {}) {
   if (err instanceof HumanizedInputError) {
     if (err.hit) body.hit = err.hit;
     if (err.delivered !== undefined) body.delivered = err.delivered;
+    if (err.pointer) body.pointer = err.pointer;
+    if (typeof err.retrySafe === 'boolean') body.retrySafe = err.retrySafe;
     if (err.hint) body.hint = err.hint;
   }
   // Report unexpected 500s to Sentry (skip intentional admission-control 503s)
@@ -4125,8 +4127,8 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *           (`status: approval_required`) when the target is a dangerous control and
  *           `confirm` was not true. For humanized clicks, `input.hit` reports the element
  *           found under the pointer before the press and `input.delivered` whether a click
- *           event reached the target (`null` when the page navigated or tore the element
- *           down before it could be read).
+ *           event reached the target (`null` when that cannot be known: the page navigated,
+ *           removed or hid the element, or stayed busy past the 2 s probe bound).
  *         content:
  *           application/json:
  *             schema:
@@ -4147,11 +4149,13 @@ app.post('/tabs/:tabId/wait', async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  *       409:
  *         description: >
- *           Humanized click could not be verified: `code: target_obscured` when another
- *           element sits under the pointer after one corrective re-aim, or
- *           `code: click_not_delivered` when no click event reached the target. The body
- *           carries `hit`, `delivered`, and a `hint`; retry after a snapshot or send
- *           `humanized:false`.
+ *           Humanized click could not be verified. `code: target_obscured`: another
+ *           element sits under the pointer after one corrective re-aim, and nothing was
+ *           pressed. `code: click_not_delivered`: no pointer or click event reached the
+ *           target (`retrySafe: true`). `code: click_unconfirmed`: the press reached the
+ *           target but no click followed, so the page may already have acted
+ *           (`retrySafe: false`; check the page before retrying). The body carries `hit`,
+ *           `delivered`, `pointer`, `retrySafe`, and a `hint`.
  *         content:
  *           application/json:
  *             schema:

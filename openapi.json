@@ -1787,7 +1787,7 @@
         },
         "responses": {
           "200": {
-            "description": "Click result with optional post-action snapshot, or an ApprovalRequired body (`status: approval_required`) when the target is a dangerous control and `confirm` was not true. For humanized clicks, `input.hit` reports the element found under the pointer before the press and `input.delivered` whether a click event reached the target (`null` when the page navigated or tore the element down before it could be read).\n",
+            "description": "Click result with optional post-action snapshot, or an ApprovalRequired body (`status: approval_required`) when the target is a dangerous control and `confirm` was not true. For humanized clicks, `input.hit` reports the element found under the pointer before the press and `input.delivered` whether a click event reached the target (`null` when that cannot be known: the page navigated, removed or hid the element, or stayed busy past the 2 s probe bound).\n",
             "content": {
               "application/json": {
                 "schema": {
@@ -1824,7 +1824,7 @@
             }
           },
           "409": {
-            "description": "Humanized click could not be verified: `code: target_obscured` when another element sits under the pointer after one corrective re-aim, or `code: click_not_delivered` when no click event reached the target. The body carries `hit`, `delivered`, and a `hint`; retry after a snapshot or send `humanized:false`.\n",
+            "description": "Humanized click could not be verified. `code: target_obscured`: another element sits under the pointer after one corrective re-aim, and nothing was pressed. `code: click_not_delivered`: no pointer or click event reached the target (`retrySafe: true`). `code: click_unconfirmed`: the press reached the target but no click followed, so the page may already have acted (`retrySafe: false`; check the page before retrying). The body carries `hit`, `delivered`, `pointer`, `retrySafe`, and a `hint`.\n",
             "content": {
               "application/json": {
                 "schema": {

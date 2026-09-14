@@ -2,16 +2,24 @@ import { test, expect } from '@jest/globals';
 import { HumanizedInputError, humanizedClick, humanizedPressAndHold, humanizedScroll } from '../../lib/humanized-input.js';
 
 // A deterministic fake of the Playwright surface the humanized layer touches.
-function fakePage({ hits = [], clicks = 1, failEvaluate = false, hangMove = false } = {}) {
+function fakePage({
+  hits = [],
+  observed = { clicked: true, pressed: true, released: true, rendered: true },
+  failEvaluate = false,
+  hangMove = false,
+  hangProbeRead = false,
+  hangHitTest = false,
+} = {}) {
   const calls = [];
   const hitQueue = [...hits];
   const box = { x: 100, y: 200, width: 120, height: 30 };
-  let probe = null;
-  const element = {
+  const probeHandle = {
     async evaluate(fn) {
-      if (fn.name === 'armClickProbe') { probe = { clicks: 0 }; calls.push('arm'); return undefined; }
-      if (fn.name === 'readClickProbe') { calls.push('read'); if (failEvaluate) throw new Error('Execution context was destroyed'); return probe ? clicks : null; }
-      throw new Error(`unexpected element evaluate ${fn.name}`);
+      if (fn.name !== 'readDeliveryProbe') throw new Error(`unexpected probe evaluate ${fn.name}`);
+      calls.push('read');
+      if (hangProbeRead) return new Promise(() => {});
+      if (failEvaluate) throw new Error('Execution context was destroyed');
+      return observed;
     },
     async dispose() { calls.push('dispose'); },
   };
@@ -20,10 +28,15 @@ function fakePage({ hits = [], clicks = 1, failEvaluate = false, hangMove = fals
     async boundingBox() { return box; },
     async evaluate(fn, point) {
       calls.push(`hit:${Math.round(point.x)},${Math.round(point.y)}`);
+      if (hangHitTest) return new Promise(() => {});
       if (failEvaluate) throw new Error('evaluate failed');
       return hitQueue.length ? hitQueue.shift() : { checked: true, hit: true, under: 'button' };
     },
-    async elementHandle() { return element; },
+    async evaluateHandle(fn) {
+      if (fn.name !== 'armDeliveryProbe') throw new Error(`unexpected evaluateHandle ${fn.name}`);
+      calls.push('arm');
+      return probeHandle;
+    },
   };
   const page = {
     viewportSize() { return { width: 1280, height: 720 }; },
@@ -92,15 +105,56 @@ test('strictHitTarget:false presses anyway and reports the miss', async () => {
   expect(calls).toContain('down');
 });
 
-test('fails with click_not_delivered when no click event reached the element', async () => {
-  const { page, locator, calls } = fakePage({ clicks: 0 });
+test('fails with retry-safe click_not_delivered when no part of the press reached the element', async () => {
+  const { page, locator, calls } = fakePage({ observed: { clicked: false, pressed: false, released: false, rendered: true } });
   let error;
   try { await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, opts); } catch (err) { error = err; }
   expect(error).toBeInstanceOf(HumanizedInputError);
   expect(error.code).toBe('click_not_delivered');
   expect(error.statusCode).toBe(409);
   expect(error.delivered).toBe(false);
+  expect(error.retrySafe).toBe(true);
   expect(calls).toContain('dispose');
+});
+
+test('a press that reached the element without a click is unconfirmed and never marked retry-safe', async () => {
+  for (const pointer of [{ pressed: true, released: true }, { pressed: true, released: false }, { pressed: false, released: true }]) {
+    const { page, locator } = fakePage({ observed: { clicked: false, ...pointer, rendered: true } });
+    let error;
+    try { await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, opts); } catch (err) { error = err; }
+    expect(error).toBeInstanceOf(HumanizedInputError);
+    expect(error.code).toBe('click_unconfirmed');
+    expect(error.statusCode).toBe(409);
+    expect(error.retrySafe).toBe(false);
+    expect(error.pointer).toEqual(pointer);
+    expect(error.hint).toMatch(/before retrying/);
+    expect(error.hint).not.toMatch(/humanized:false/);
+  }
+});
+
+test('a target that is gone or no longer rendered after the press reports delivered:null, not a failure', async () => {
+  for (const pressed of [true, false]) {
+    const { page, locator } = fakePage({ observed: { clicked: false, pressed, released: pressed, rendered: false } });
+    const result = await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, opts);
+    expect(result.delivered).toBeNull();
+  }
+});
+
+test('a page that stays busy after the press yields delivered:null within the probe bound', async () => {
+  const { page, locator, calls } = fakePage({ hangProbeRead: true });
+  const started = Date.now();
+  const result = await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, { ...opts, probeTimeoutMs: 20 });
+  expect(result.delivered).toBeNull();
+  expect(Date.now() - started).toBeLessThan(1000);
+  expect(calls).toContain('up');
+});
+
+test('a hung hit test degrades to an unchecked hit and still presses', async () => {
+  const { page, locator, calls } = fakePage({ hangHitTest: true });
+  const result = await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, { ...opts, probeTimeoutMs: 20 });
+  expect(result.hit).toEqual({ checked: false, reason: 'probe_timeout' });
+  expect(calls).toContain('down');
+  expect(result.delivered).toBe(true);
 });
 
 test('reports delivered:null instead of failing when the probe cannot be read', async () => {
@@ -111,7 +165,7 @@ test('reports delivered:null instead of failing when the probe cannot be read', 
 });
 
 test('double click needs at least one delivered click', async () => {
-  const { page, locator, calls } = fakePage({ clicks: 2 });
+  const { page, locator, calls } = fakePage();
   const result = await humanizedClick(page, locator, { pointer: { x: 10, y: 10 } }, { ...opts, doubleClick: true });
   expect(result.delivered).toBe(true);
   expect(calls.filter(c => c === 'down')).toHaveLength(2);
